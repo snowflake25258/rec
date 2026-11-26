@@ -1472,7 +1472,7 @@ kafka-console-producer.sh --broker-list master:9092 --topic lines
 
 vim upper.py
 
-```python
+```text
 from pyflink.table.udf import  udf
 
 # 编写自定义函数

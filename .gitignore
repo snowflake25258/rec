@@ -6,3 +6,6 @@ runtime/
 *.pyc
 
 .DS_Store
+# IDE
+.idea/
+*.iml
