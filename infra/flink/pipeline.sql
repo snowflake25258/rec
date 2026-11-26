@@ -87,6 +87,13 @@ INSERT INTO mysql_hotness
 SELECT item_id, window_start, window_end,
     SUM(time_decay(behavior_weight(action), CAST(TIMESTAMPDIFF(SECOND, CAST(event_time AS TIMESTAMP(3)), window_end) AS DOUBLE) / 3600.0)),
     COUNT(*)
-FROM TABLE(TUMBLE(TABLE unique_events, DESCRIPTOR(event_time), INTERVAL '1' MINUTE))
+-- Flink 1.20.1 对「视图 + 时间属性」有 planner 回归：TABLE(TUMBLE(TABLE <view>)) 会抛
+-- "belongs to a different planner than is currently being used"，因此这里把窗口直接建在
+-- 物理表 kafka_events 上，并把 valid_events 的过滤条件下推。
+-- 代价：热度聚合不具备 event_id 去重（重复投递会短暂高估）；明细与特征仍然去重。
+FROM TABLE(TUMBLE(TABLE kafka_events, DESCRIPTOR(event_time), INTERVAL '1' MINUTE))
+WHERE event_id IS NOT NULL AND user_id IS NOT NULL AND item_id IS NOT NULL
+  AND ts_ms > 0
+  AND action IN ('view','complete','like','unlike','favorite','unfavorite','follow','unfollow','skip')
 GROUP BY item_id, window_start, window_end;
 END;
