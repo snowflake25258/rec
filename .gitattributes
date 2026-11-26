@@ -1,0 +1,6 @@
+# Shell 脚本必须保持 LF，否则在 Linux 容器里会报 "set: pipefail: invalid option name"
+*.sh text eol=lf
+*.sql text eol=lf
+*.py text=auto eol=lf
+*.md text=auto
+*.json text=auto
