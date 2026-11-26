@@ -2,10 +2,18 @@
 __pycache__/
 .pytest_cache/
 .env
-runtime/
 *.pyc
 
 .DS_Store
+
 # IDE
 .idea/
 *.iml
+.codex-ppt-*/
+
+# 本地运行产物（仓库只跟踪 runtime/media 下的视频与清单）
+runtime/models/
+runtime/*.sqlite3
+runtime/*.log
+runtime/flink-job.json
+runtime/pipeline.rendered.sql

@@ -19,9 +19,7 @@ bash scripts/dev.sh
 - `SEED_CATALOG=1`：只插入缺失的 6 个演示创作者和 24 个演示视频，普通重启不覆盖已有编辑内容；若检测到多条视频指向同一片源，会自动修复为 24 条互不重复的演示目录。
 - `SEED_ANALYTICS=1` 且 demo 模式：仅当行为表为空时创建 650 条固定种子模拟历史。正式数据环境设置为 0。
 
-项目早期的本地演示数据可通过 `.venv/bin/python -m scripts.migrate_demo_to_mysql` 迁入当前 MySQL。该脚本仅允许 demo 模式，保留源文件，对已有主键不覆盖；导入模型保持未启用，以保留当前线上版本。
 
-默认应用运行不会使用 SQLite。代码中的 SQLite 适配器仅用于隔离测试，完整 MySQL 集成测试使用独立 `_test` 库。
 
 
 ## 接入现有 master 集群（当前环境）
@@ -55,7 +53,7 @@ checkpoint 配置按文档写入 `flink-conf.yaml`：10 秒间隔、`EXACTLY_ONC
 .venv/bin/python -m scripts.stream submit --restore file:///absolute/path/to/savepoint
 ```
 
-恢复前 SQL Client 会先执行 `SET 'execution.savepoint.path' = '...'`，再执行 Statement Set。禁止清空 Kafka topic 或特征表来替代恢复。新机器/多机部署时，需要所有 worker 可访问的共享 checkpoint 目录；当前本地文件路径只适用于这一台集群主机。Docker 方案仍为独立的 1.20 环境，不能直接与本机 1.18 的 checkpoint/运行作业混用。
+恢复前 SQL Client 会先执行 `SET 'execution.savepoint.path' = '...'`，再执行 Statement Set。禁止清空 Kafka topic 或特征表来替代恢复。新机器/多机部署时，需要所有 worker 可访问的共享 checkpoint 目录；当前本地文件路径只适用于这一台集群主机。Docker 方案使用 Flink/PyFlink 1.18.1，与本机集群独立；恢复仍需确认状态文件可访问、连接器与作业配置兼容，不能直接混用本机运行作业。
 
 推荐控制台现在实际探测 Kafka topic、指定 Flink 作业和最近 checkpoint（5 秒缓存），显示连接失败、运行异常或 checkpoint 过期；不再仅以“已配置”代表健康。
 
@@ -67,6 +65,8 @@ checkpoint 配置按文档写入 `flink-conf.yaml`：10 秒间隔、`EXACTLY_ONC
 docker compose up -d --build
 docker compose logs mysql-init flink-submit taskmanager
 ```
+
+逐个服务手动启动的命令和就绪条件见 [Compose 手动启动指南](docs/compose-manual-start.md)。
 
 需要 Docker Engine、可用镜像网络和足够内存。API 地址 http://127.0.0.1:8000 ，Flink UI http://127.0.0.1:8081 。本地服务与容器 API 共用 8000，启动容器前应停止本地 API。
 
@@ -174,20 +174,7 @@ node --check frontend/models.js
 docker compose config --quiet
 ```
 
-真实 MySQL 测试需要提前创建独立、以 `_test` 结尾的数据库，并加载连接环境变量：
-
-```bash
-# 使用已有 .env 的凭据；测试不使用 yingke 业务库
-.venv/bin/python - <<'PY'
-from dotenv import load_dotenv
-load_dotenv('.env')
-import os, pytest
-os.environ['MYSQL_TEST_DATABASE']='yingke_rec_test'
-raise SystemExit(pytest.main(['backend/tests','-q']))
-PY
-```
-
-测试覆盖算法、事务回滚、互动状态与去重、Outbox 重试、真实 MySQL 行为/特征与模型版本、训练梯度差分、时间切分隔离、排名指标、制品校验、训练失败/忙碌、版本回滚、重启、账号注册登录、令牌撤销/过期与跨用户越权拦截。当前 master 集群已完成 API → Outbox → Kafka → Flink SQL Client/Python UDF → MySQL、事件重复发送去重和 checkpoint 验证；SQL Client 版本已切换为线上作业；Compose 独立容器环境仍未运行。
+自动测试仅使用内存样本、临时媒体文件及模拟 HTTP 响应，覆盖推荐算法、密码哈希、训练梯度差分、时间切分隔离、排名指标、模型文件校验、媒体 Range 播放和 SQL 模板。测试不会连接 MySQL、创建或删除数据库，也不会启动业务应用生命周期。现有 MySQL 仅用于正常业务运行。
 
 ## 文件与技术参考
 

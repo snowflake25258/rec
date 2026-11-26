@@ -112,7 +112,7 @@ class LoginRequest(BaseModel):
 
 @app.get('/api/health')
 def health():
-    return {'status': 'ok', 'mode': config.mode, 'business_backend': config.business_backend}
+    return {'status': 'ok', 'mode': config.mode, 'business_backend': 'mysql'}
 
 @app.post('/api/auth/register', status_code=201)
 def register(payload: RegisterRequest, request: Request):
@@ -152,17 +152,22 @@ def local_video(filename: str):
         raise HTTPException(404,'本地视频文件缺失')
     return FileResponse(path,media_type='video/mp4',headers={'Cache-Control':'public, max-age=31536000, immutable'})
 
+def profile_state(user_id: str):
+    profile=business_database().state(user_id)
+    profile['watched']=sorted(business_database().watched_ids(user_id) | database().watched_ids(user_id))
+    return profile
+
 @app.get('/api/users/{user_id}/state')
 def user_state(user_id: str, user: dict = Depends(current_user)):
     import re
     if not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', user_id):
         raise HTTPException(422, '用户 ID 无效')
     require_identity(user, user_id)
-    return business_database().state(user_id)
+    return profile_state(user_id)
 
 @app.get('/api/me/state')
 def my_state(user: dict = Depends(current_user)):
-    return business_database().state(user['id'])
+    return profile_state(user['id'])
 
 @app.get('/api/videos')
 def video_catalog():
@@ -195,6 +200,7 @@ def recommendations(user: dict = Depends(current_user), user_id: Optional[str] =
     try:
         events = database().events()
         features = database().features()
+        watched = business_database().watched_ids(user_id) | database().watched_ids(user_id)
     except Exception as exc:
         logger.exception('Feature store unavailable')
         raise HTTPException(503, 'MySQL 特征读取失败，请检查实时数据链路') from exc
@@ -203,13 +209,13 @@ def recommendations(user: dict = Depends(current_user), user_id: Optional[str] =
         if registry is None:
             raise HTTPException(503, '模型服务正在启动')
         try:
-            response = registry.recommendations(algorithm,user_id,items,events,limit,features)
+            response = registry.recommendations(algorithm,user_id,items,events,limit,features,excluded=watched)
         except LookupError as exc:
             raise HTTPException(409,str(exc)) from exc
         except (ValueError,OSError) as exc:
             raise HTTPException(503,'模型文件不可用，请恢复文件或切换模型版本') from exc
     else:
-        response = {'items':recommend(items, events, user_id, algorithm, limit, features), 'model_version':None,'fallback':None}
+        response = {'items':recommend(items, events, user_id, algorithm, limit, features,excluded=watched), 'model_version':None,'fallback':None}
     return {**response, 'algorithm': algorithm, 'mode': config.mode, 'latency_ms': round((time.perf_counter()-start)*1000, 2)}
 
 @app.post('/api/events', status_code=202)

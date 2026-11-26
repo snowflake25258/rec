@@ -1,5 +1,17 @@
 name: yingke
 services:
+  mysql:
+    image: library/mysql:8.0.44
+    ports:
+      - 127.0.0.1:3306:3306
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql-data:/var/lib/mysql
+    extra_hosts:
+    - host.docker.internal:host-gateway
+
   kafka:
     image: apache/kafka:3.9.0
     ports:
@@ -29,6 +41,7 @@ services:
       interval: 10s
       timeout: 10s
       retries: 20
+
   kafka-init:
     image: apache/kafka:3.9.0
     depends_on:
@@ -47,6 +60,7 @@ services:
     - '3'
     - --replication-factor
     - '1'
+
   jobmanager:
     build: ./infra/flink
     command: jobmanager
@@ -87,8 +101,8 @@ services:
     environment:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: jobmanager
-        taskmanager.numberOfTaskSlots: 4
-        taskmanager.memory.process.size: 2048m
+        taskmanager.numberOfTaskSlots: 16
+        taskmanager.memory.process.size: 4096m
         python.executable: python3
         state.backend: hashmap
         state.checkpoints.dir: file:///opt/flink/checkpoints
@@ -149,7 +163,6 @@ services:
       REC_MODE: production
       AUTH_TOKEN_TTL_DAYS: ${AUTH_TOKEN_TTL_DAYS:-30}
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      BUSINESS_BACKEND: mysql
       MYSQL_HOST: ${MYSQL_DOCKER_HOST:-host.docker.internal}
       MYSQL_PORT: ${MYSQL_PORT:-3306}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-yingke}
@@ -166,13 +179,12 @@ services:
   mysql-init:
     build: .
     environment:
-      MYSQL_HOST: ${MYSQL_DOCKER_HOST:-host.docker.internal}
+      MYSQL_HOST: ${mysql:-host.docker.internal}
       MYSQL_PORT: ${MYSQL_PORT:-3306}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-yingke}
       MYSQL_USER: ${MYSQL_USER:-root}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
       REC_MODE: production
-      BUSINESS_BACKEND: mysql
       SEED_CATALOG: '1'
     entrypoint:
     - python
@@ -184,3 +196,4 @@ volumes:
   app-runtime: null
   kafka-data: null
   checkpoints: null
+  mysql-data: null

@@ -1,6 +1,7 @@
 FROM python:3.11-slim
 WORKDIR /app
 COPY requirements.txt .
+RUN pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend backend
 COPY frontend frontend

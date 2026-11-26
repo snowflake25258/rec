@@ -2,8 +2,20 @@ from __future__ import annotations
 from pathlib import Path
 import hashlib
 from scripts.download_videos import download
-from backend.tests.test_recommendations import client
+from dataclasses import replace
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 import backend.main as main
+
+
+@pytest.fixture
+def client(tmp_path,monkeypatch):
+    monkeypatch.setattr(main,'config',replace(main.config,media_directory=str(tmp_path/'media')))
+    app=FastAPI()
+    app.add_api_route('/media/videos/{filename}',main.local_video,methods=['GET','HEAD'])
+    with TestClient(app) as client:
+        yield client
 
 
 def test_local_video_supports_seek_and_head(client):

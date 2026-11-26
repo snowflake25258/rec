@@ -12,6 +12,7 @@ import numpy as np
 from sqlalchemy import select
 from backend.business import BusinessStore, model_versions
 from backend.algorithms import recommend, normalize, WEIGHTS
+from backend.recommendation_policy import watched_items
 from backend.training.data import prepare, ranking_metrics, TRAINABLE
 from backend.training.models import fit, Model
 from backend.training import artifacts
@@ -136,7 +137,7 @@ class Registry:
             self.cache.popitem(last=False)
 
     def recommendations(self,algorithm: str,user: str,items: list[dict[str,Any]],events: list[dict[str,Any]],
-                        limit: int,features=None) -> dict[str,Any]:
+                        limit: int,features=None,excluded: set[str] | None = None) -> dict[str,Any]:
         row = self.active(algorithm)
         if row is None:
             raise LookupError('该算法尚未启用模型，请先在推荐控制台训练并启用版本')
@@ -149,14 +150,15 @@ class Registry:
             else:
                 self.cache.move_to_end(row['id'])
         scores = model.scores(user)
-        fallback = recommend(items,events,user,'popular',len(items),features)
+        watched = watched_items(events,user,excluded)
+        fallback = recommend(items,events,user,'popular',len(items),features,excluded=watched)
         if scores is None:
             return {'items':[{**v,'reason':'模型未见过该用户 · 热门回退'} for v in fallback[:limit]],
                     'model_version':row['id'],'fallback':'unknown_user'}
         lookup = dict(zip(model.items,normalize(scores)))
         seen = {e['item_id'] for e in events if e['user_id']==user and WEIGHTS.get(e['action'],0)>0}
         known = [{**v,'score':round(float(lookup[v['id']])-(.15 if v['id'] in seen else 0),4),
-                  'reason':f'{algorithm} · 模型 {row["id"][:8]}'} for v in items if v['id'] in lookup]
+                  'reason':f'{algorithm} · 模型 {row["id"][:8]}'} for v in items if v['id'] in lookup and v['id'] not in watched]
         known.sort(key=lambda v:(-v['score'],v['id']))
         extra = [{**v,'reason':'模型未见过该视频 · 热门补齐'} for v in fallback if v['id'] not in lookup]
         return {'items':(known+extra)[:limit],'model_version':row['id'],'fallback':None if not extra else 'new_items_backfill'}

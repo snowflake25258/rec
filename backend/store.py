@@ -10,21 +10,18 @@ import time
 from sqlalchemy import create_engine, select, func
 from sqlalchemy.engine import Engine, URL, Connection
 from sqlalchemy.dialects.mysql import insert as mysql_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from backend.analytics_schema import metadata, events, features, stream_events, stream_features
 from backend.algorithms import WEIGHTS
+from backend.recommendation_policy import WATCH_ACTIONS
 
 @dataclass(frozen=True)
 class Config:
     mode: str = os.getenv('REC_MODE','demo')
-    database: str = os.getenv('REC_DATABASE','runtime/test-events.sqlite3')
     kafka: str = os.getenv('KAFKA_BOOTSTRAP_SERVERS','localhost:9092')
     kafka_topic: str = os.getenv('KAFKA_TOPIC','rec-events')
     flink_rest_url: str = os.getenv('FLINK_REST_URL','http://master:8081')
     flink_job_id: str = os.getenv('FLINK_JOB_ID','')
     auth_token_ttl_days: int = int(os.getenv('AUTH_TOKEN_TTL_DAYS','30'))
-    business_backend: str = os.getenv('BUSINESS_BACKEND','mysql')
-    business_database: str = os.getenv('BUSINESS_DATABASE','runtime/test-business.sqlite3')
     mysql_host: str = os.getenv('MYSQL_HOST','127.0.0.1')
     mysql_port: int = int(os.getenv('MYSQL_PORT','3306'))
     mysql_database: str = os.getenv('MYSQL_DATABASE','yingke')
@@ -46,17 +43,14 @@ class Store:
         self.owns_engine=engine is None
         if engine is not None:
             self.engine=engine
-        elif config.business_backend=='sqlite' and config.mode=='demo':
-            Path(config.database).parent.mkdir(parents=True,exist_ok=True)
-            self.engine=create_engine(URL.create('sqlite',database=config.database),connect_args={'timeout':15,'check_same_thread':False})
-        elif config.business_backend=='mysql':
+        else:
             if not config.mysql_password:
                 raise ValueError('MYSQL_PASSWORD is required')
             self.engine=create_engine(URL.create('mysql+pymysql',username=config.mysql_user,password=config.mysql_password,
                 host=config.mysql_host,port=config.mysql_port,database=config.mysql_database,query={'charset':'utf8mb4'}),
                 pool_pre_ping=True,connect_args={'connect_timeout':5,'read_timeout':10,'write_timeout':10})
-        else:
-            raise ValueError('SQLite is available only to isolated demo/tests')
+        if self.engine.dialect.name != 'mysql':
+            raise ValueError('Analytics storage requires a MySQL engine')
         metadata.create_all(self.engine)
         if config.mode=='demo' and config.seed_analytics:
             with self.engine.begin() as db:
@@ -78,17 +72,21 @@ class Store:
         db.execute(events.insert().values(**{k:event[k] for k in ('event_id','user_id','item_id','action')},ts_ms=ts,weight=weight))
         values=dict(user_id=event['user_id'],item_id=event['item_id'],preference=weight,interactions=1,last_ts=ts)
         changes=dict(preference=features.c.preference+weight,interactions=features.c.interactions+1,
-                     last_ts=func.greatest(features.c.last_ts,ts) if self.engine.dialect.name=='mysql' else func.max(features.c.last_ts,ts))
-        if self.engine.dialect.name=='mysql':
-            db.execute(mysql_insert(features).values(**values).on_duplicate_key_update(**changes))
-        else:
-            db.execute(sqlite_insert(features).values(**values).on_conflict_do_update(index_elements=['user_id','item_id'],set_=changes))
+                     last_ts=func.greatest(features.c.last_ts,ts))
+        db.execute(mysql_insert(features).values(**values).on_duplicate_key_update(**changes))
 
     def events(self) -> list[dict[str,Any]]:
         events=self.event_table
         with self.engine.connect() as db:
             rows=db.execute(select(events).order_by(events.c.ts_ms.desc(),events.c.event_id.desc()).limit(20000)).mappings().all()
             return [dict(event_id=r['event_id'],user_id=r['user_id'],item_id=r['item_id'],action=r['action'],timestamp=r['ts_ms']/1000.) for r in reversed(rows)]
+
+    def watched_ids(self,user: str) -> set[str]:
+        # Watch filtering must not be truncated by the feature sampling limit.
+        table=self.event_table
+        with self.engine.connect() as db:
+            return set(db.execute(select(table.c.item_id).where(
+                table.c.user_id==user,table.c.action.in_(WATCH_ACTIONS)).distinct()).scalars())
 
     def append(self,event: dict[str,Any]) -> None:
         if self.config.mode=='demo':

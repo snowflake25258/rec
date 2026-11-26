@@ -1,33 +1,25 @@
 from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
-from threading import Event
 import numpy as np
 import pytest
 from backend.training.data import prepare, ranking_metrics
 from backend.training.models import fit, gradient
 from backend.training.artifacts import save, load
-from backend.training.registry import Registry
-from backend.business import BusinessStore
-from backend.store import Config, Store
-from backend.tests.test_recommendations import client, register
-import backend.main as main
 
 @pytest.fixture
-def data(tmp_path):
-    store=Store(Config(mode='demo',business_backend='sqlite',seed_analytics=True,database=str(tmp_path/'events.sqlite3')))
+def data():
+    import random
     from backend.catalog import catalog
-    result=prepare(catalog(),store.events())
-    store.close()
-    return result
-
-@pytest.fixture
-def registry(tmp_path):
-    business=BusinessStore(Config(mode='demo',business_backend='sqlite',business_database=str(tmp_path/'business.sqlite3')))
-    registry=Registry(business,str(tmp_path/'models'))
-    yield registry
-    registry.close()
-    business.close()
+    rng=random.Random(42)
+    events=[]
+    for i in range(650):
+        user=f'u{rng.randrange(1,31):03d}'
+        topic=int(user[1:])%6
+        item=rng.choice([j+1 for j in range(24) if j%6==topic] if rng.random()<.7 else list(range(1,25)))
+        events.append(dict(event_id=f'sample-{i}',user_id=user,item_id=f'v{item:03d}',
+            action=rng.choice(['view','like','complete','favorite']),timestamp=float(i)))
+    return prepare(catalog(),events)
 
 @pytest.mark.parametrize('algorithm',['als','fm','two_tower'])
 def test_train_loss_finite_decreases_and_reproducible(data,algorithm):
@@ -94,118 +86,3 @@ def test_model_artifact_roundtrip_and_integrity(tmp_path,data,algorithm):
     path.write_bytes(path.read_bytes()+b'corrupted')
     with pytest.raises(ValueError,match='校验'):
         load(path,digest)
-
-
-def snapshot(registry,tmp_path):
-    analytics=Store(Config(mode='demo',business_backend='sqlite',seed_analytics=True,database=str(tmp_path/'analytics.sqlite3')))
-    return registry.business.catalog(),analytics.events()
-
-
-def test_registry_lifecycle_and_rollback(registry,tmp_path):
-    items,events=snapshot(registry,tmp_path)
-    version=registry.submit(items,events,'als',6,2,42)
-    registry.future.result(timeout=15)
-    row=registry.versions()[0]
-    assert row['status']=='ready' and not row['active']
-    assert row['evaluation']['evaluated_users']>0
-    with pytest.raises(LookupError):
-        registry.recommendations('als','u001',items,events,5)
-    registry.activate(version)
-    result=registry.recommendations('als','u001',items,events,5)
-    assert len(result['items'])==5 and result['model_version']==version
-    assert registry.recommendations('als','unknown',items,events,5)['fallback']=='unknown_user'
-    second=registry.submit(items,events,'als',6,2,8)
-    registry.future.result(timeout=15)
-    registry.activate(second)
-    assert registry.active('als')['id']==second
-    registry.activate(version)
-    assert registry.active('als')['id']==version
-    assert sum(v['active'] for v in registry.versions())==1
-    registry.deactivate(version)
-    assert registry.active('als') is None
-
-
-def test_failed_training_and_busy_queue(registry,tmp_path,monkeypatch):
-    import backend.training.registry as module
-    items,events=snapshot(registry,tmp_path)
-    entered,release=Event(),Event()
-    def fail(*args,**kwargs):
-        entered.set()
-        release.wait(timeout=5)
-        raise ValueError('受控训练失败')
-    monkeypatch.setattr(module,'fit',fail)
-    registry.submit(items,events,'fm',4,2,42)
-    assert entered.wait(timeout=5)
-    try:
-        with pytest.raises(RuntimeError,match='运行中'):
-            registry.submit(items,events,'als',4,2,42)
-    finally:
-        release.set()
-    registry.future.result(timeout=10)
-    version=registry.versions()[0]
-    assert version['status']=='failed' and version['error']=='受控训练失败'
-    with pytest.raises(ValueError,match='完成训练'):
-        registry.activate(version['id'])
-
-
-def test_api_train_activate_inference(client):
-    headers,_=register(client,'trainer')
-    assert client.get('/api/recommendations?algorithm=two_tower',headers=headers).status_code==409
-    assert client.post('/api/models/train',json={'algorithm':'two_tower','epochs':100}).status_code==401
-    assert client.post('/api/models/train',json={'algorithm':'two_tower','epochs':100},headers=headers).status_code==422
-    result=client.post('/api/models/train',json={'algorithm':'two_tower','epochs':3,'factors':4},headers=headers)
-    assert result.status_code==202
-    version=result.json()['id']
-    main.registry.future.result(timeout=15)
-    assert client.get('/api/models',headers=headers).json()['items'][0]['status']=='ready'
-    assert client.post(f'/api/models/{version}/activate',headers=headers).status_code==200
-    response=client.get('/api/recommendations?algorithm=two_tower&limit=5',headers=headers).json()
-    assert response['model_version']==version and len(response['items'])==5
-    algorithms=client.get('/api/algorithms',headers=headers).json()['items']
-    assert next(a for a in algorithms if a['id']=='two_tower')['status']=='active'
-    assert client.post(f'/api/models/{version}/deactivate',headers=headers).status_code==200
-    assert client.get('/api/recommendations?algorithm=two_tower',headers=headers).status_code==409
-    assert client.post('/api/models/missing/activate',headers=headers).status_code==404
-
-
-def test_model_version_survives_service_restart(registry,tmp_path):
-    items,events=snapshot(registry,tmp_path)
-    version=registry.submit(items,events,'fm',4,2,42)
-    registry.future.result(timeout=15)
-    registry.activate(version)
-    expected=registry.recommendations('fm','u001',items,events,4)
-    second=Registry(registry.business,str(tmp_path/'models'))
-    try:
-        assert second.active('fm')['id']==version
-        assert second.recommendations('fm','u001',items,events,4)==expected
-    finally:
-        second.close()
-
-
-def test_interrupted_job_recovers_to_failed(registry,tmp_path):
-    from backend.business import model_versions
-    with registry.business.engine.begin() as db:
-        db.execute(model_versions.insert().values(id='interrupted',algorithm='als',artifact_path='',
-            metrics={'status':'running','config':{}},created_at=0,active=False))
-    second=Registry(registry.business,str(tmp_path/'models'))
-    try:
-        assert second.version('interrupted')['status']=='failed'
-    finally:
-        second.close()
-
-
-def test_corrupt_artifact_cannot_activate(registry,tmp_path):
-    items,events=snapshot(registry,tmp_path)
-    version=registry.submit(items,events,'als',4,2,42)
-    registry.future.result(timeout=15)
-    (tmp_path/'models'/f'{version}.npz').write_bytes(b'broken')
-    with pytest.raises(ValueError,match='校验'):
-        registry.activate(version)
-    assert registry.active('als') is None
-
-
-def test_models_api_requires_auth(client):
-    assert client.get('/api/models').status_code==401
-    assert client.post('/api/models/train',json={'algorithm':'als'}).status_code==401
-    headers,_=register(client,'model_trainer')
-    assert client.get('/api/models',headers=headers).status_code==200

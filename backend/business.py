@@ -1,17 +1,16 @@
-"""Transactional MySQL business data and a SQLite-only offline demo adapter."""
+"""Transactional MySQL business data."""
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import (Boolean, Column, Double, ForeignKey, Integer, JSON, MetaData, String,
                         Table, Text, Index, create_engine, select, func)
 from sqlalchemy.engine import Connection, URL
 from sqlalchemy.dialects.mysql import insert as mysql_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from backend.catalog import catalog
 from backend.store import Config
+from backend.recommendation_policy import WATCH_ACTIONS
 
 metadata = MetaData()
 users = Table('users', metadata,
@@ -54,35 +53,21 @@ class EventConflict(ValueError):
 
 class BusinessStore:
     def __init__(self, config: Config) -> None:
-        if config.business_backend == 'mysql':
-            if not config.mysql_password:
-                raise ValueError('MYSQL_PASSWORD is required for MySQL business storage')
-            url = URL.create('mysql+pymysql', username=config.mysql_user, password=config.mysql_password,
-                             host=config.mysql_host, port=config.mysql_port, database=config.mysql_database,
-                             query={'charset': 'utf8mb4'})
-            self.engine = create_engine(url, pool_pre_ping=True, pool_recycle=1800,
-                                        connect_args={'connect_timeout': 5, 'read_timeout': 10, 'write_timeout': 10})
-        elif config.business_backend == 'sqlite' and config.mode == 'demo':
-            Path(config.business_database).parent.mkdir(parents=True, exist_ok=True)
-            self.engine = create_engine(URL.create('sqlite', database=config.business_database),
-                                        connect_args={'check_same_thread': False, 'timeout': 15})
-        else:
-            raise ValueError('Business storage must use mysql; sqlite is allowed only in demo mode')
+        self.config = config
+        if not config.mysql_password:
+            raise ValueError('MYSQL_PASSWORD is required for MySQL business storage')
+        url = URL.create('mysql+pymysql', username=config.mysql_user, password=config.mysql_password,
+                         host=config.mysql_host, port=config.mysql_port, database=config.mysql_database,
+                         query={'charset': 'utf8mb4'})
+        self.engine = create_engine(url, pool_pre_ping=True, pool_recycle=1800,
+                                    connect_args={'connect_timeout': 5, 'read_timeout': 10, 'write_timeout': 10})
         metadata.create_all(self.engine)
         if config.seed_catalog:
             self.seed()
 
     def upsert(self, db: Connection, table: Table, values: dict[str, Any], changes: dict[str, Any] | None = None) -> None:
-        if self.engine.dialect.name == 'mysql':
-            stmt = mysql_insert(table).values(**values)
-            db.execute(stmt.on_duplicate_key_update(**(changes or {next(iter(values)): table.c[next(iter(values))]})))
-        else:
-            stmt = sqlite_insert(table).values(**values)
-            if changes:
-                stmt = stmt.on_conflict_do_update(index_elements=list(table.primary_key.columns), set_=changes)
-            else:
-                stmt = stmt.on_conflict_do_nothing()
-            db.execute(stmt)
+        stmt = mysql_insert(table).values(**values)
+        db.execute(stmt.on_duplicate_key_update(**(changes or {next(iter(values)): table.c[next(iter(values))]})))
 
     def seed(self) -> None:
         with self.engine.begin() as db:
@@ -132,6 +117,14 @@ class BusinessStore:
                 follows.c.user_id == user, follows.c.active.is_(True))).scalars().all()
         return {'liked': [r.item_id for r in rows if r.kind == 'like'],
                 'saved': [r.item_id for r in rows if r.kind == 'favorite'], 'following': list(creators)}
+
+    def watched_ids(self, user: str) -> set[str]:
+        # Read committed business events immediately, without waiting for Kafka/Flink.
+        item = outbox.c.payload['item_id'].as_string()
+        with self.engine.connect() as db:
+            return set(db.execute(select(item).where(
+                outbox.c.payload['user_id'].as_string()==user,
+                outbox.c.payload['action'].as_string().in_(WATCH_ACTIONS)).distinct()).scalars())
 
     def record(self, event: dict[str, Any]) -> bool:
         """Business mutation + durable outbox in one transaction. Returns whether new."""

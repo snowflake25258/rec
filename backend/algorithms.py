@@ -2,6 +2,7 @@ from __future__ import annotations
 """Executable classical recommendation baselines with deterministic training."""
 from typing import Any
 import numpy as np
+from backend.recommendation_policy import watched_items
 
 ALGORITHMS = [
     ('hybrid', '混合推荐', '融合', '融合协同、内容、热度与探索'),
@@ -26,7 +27,8 @@ def normalize(x: np.ndarray) -> np.ndarray:
 
 def recommend(items: list[dict[str, Any]], events: list[dict[str, Any]], user: str,
               algorithm: str, limit: int = 10,
-              materialized: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+              materialized: list[dict[str, Any]] | None = None,
+              excluded: set[str] | None = None) -> list[dict[str, Any]]:
     if algorithm not in {a[0] for a in ALGORITHMS}:
         raise ValueError('未知算法')
     if not items:
@@ -121,9 +123,10 @@ def recommend(items: list[dict[str, Any]], events: list[dict[str, Any]], user: s
     result_scores = scores[algorithm]
     if not np.any(target) and algorithm not in ('popular', 'trending'):
         result_scores = normalize(popular)
-    # Mild repeat penalty; catalog can remain browsable even for a saturated demo user.
+    # Watch history is a hard exclusion; other interactions retain a mild repeat penalty.
     result_scores = normalize(result_scores)-.15*(target > 0)
-    candidates = list(range(len(items)))
+    watched = watched_items(events,user,excluded)
+    candidates = [j for j,v in enumerate(items) if v['id'] not in watched]
     selected: list[int] = []
     while candidates and len(selected) < limit:
         def rank(j: int) -> float:
