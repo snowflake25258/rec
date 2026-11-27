@@ -11,8 +11,9 @@ __pycache__/
 *.iml
 .codex-ppt-*/
 
-# 本地运行产物（仓库只跟踪 runtime/media 下的视频与清单）
+# 本地运行产物（视频用 scripts/download_videos 重新下载，不纳入版本库）
 runtime/models/
+runtime/media/videos/
 runtime/*.sqlite3
 runtime/*.log
 runtime/flink-job.json
