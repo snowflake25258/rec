@@ -13,6 +13,8 @@ TRAINABLE = [
 
 @dataclass(frozen=True)
 class Dataset:
+    # 冻结样本的编号映射与切分元数据。matrix 仅由训练段构造；
+    # validation 保存验证段新出现的正反馈，索引均使用训练期用户映射。
     users: tuple[str, ...]
     items: tuple[str, ...]
     categories: tuple[str, ...]
@@ -26,6 +28,9 @@ class Dataset:
 
 
 def prepare(items: list[dict[str, Any]], events: list[dict[str, Any]]) -> Dataset:
+    # 按全局事件时间取约 80% 切点，相同时间戳全部放在同一侧。
+    # 先切分再累加训练矩阵，确保验证标签不会泄漏进训练及负采样。
+    # 验证仅评估训练期已知用户对未交互视频的后续正反馈。
     ids = {v['id']: i for i, v in enumerate(items)}
     rows = sorted((e for e in events if e['item_id'] in ids and e['action'] in WEIGHTS
                    and math.isfinite(float(e['timestamp']))), key=lambda e: (float(e['timestamp']), e['event_id']))
@@ -64,6 +69,8 @@ def prepare(items: list[dict[str, Any]], events: list[dict[str, Any]]) -> Datase
 
 
 def samples(data: Dataset, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    # 仅从训练矩阵采样：每个正反馈最多配三个未交互视频。
+    # 未交互标记为训练用负样本，不代表用户明确不喜欢；不读取验证标签。
     positive = np.argwhere(data.matrix > 0)
     pairs = [(int(u), int(j), 1.) for u,j in positive]
     for u,j in positive:
@@ -76,6 +83,8 @@ def samples(data: Dataset, rng: np.random.Generator) -> tuple[np.ndarray, np.nda
 
 
 def ranking_metrics(predictions: dict[int, np.ndarray], data: Dataset, k: int = 5) -> dict[str, Any]:
+    # 完整目录排序时屏蔽训练期已有正反馈，计算每个用户的 Recall 和 NDCG。
+    # 无可评估用户时返回 null；覆盖率统计所有入榜视频的去重比例。
     recalls, ndcgs, covered = [], [], set()
     for u, relevant in data.validation.items():
         scores = predictions[u].copy()

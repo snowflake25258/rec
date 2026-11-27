@@ -33,6 +33,8 @@ registry: Optional[Registry] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 应用生命周期按依赖顺序创建业务存储、鉴权、分析存储、模型管理器和投递线程。
+    # 生产模式后台消费 Outbox；退出时先停止任务和线程，最后释放共享数据库连接池。
     global store, business, auth, publisher, registry
     business = BusinessStore(config)
     try:
@@ -72,6 +74,8 @@ def bearer_token(authorization: str = Header(default='')) -> str:
     return token.strip()
 
 def current_user(token: str = Depends(bearer_token)) -> dict:
+    # 统一鉴权依赖：根据服务端会话查询身份，不能信任客户端传入的用户编号。
+    # 模型管理路由也通过 include_router 的依赖执行相同验证。
     if auth is None:
         raise HTTPException(503, '登录服务正在启动')
     user = auth.authenticate(token)
@@ -153,6 +157,7 @@ def local_video(filename: str):
     return FileResponse(path,media_type='video/mp4',headers={'Cache-Control':'public, max-age=31536000, immutable'})
 
 def profile_state(user_id: str):
+    # 合并当前互动状态和完整已看集合；包含尚未送达 Flink 的 Outbox 事件。
     profile=business_database().state(user_id)
     profile['watched']=sorted(business_database().watched_ids(user_id) | database().watched_ids(user_id))
     return profile
@@ -190,7 +195,12 @@ def algorithms(user: dict = Depends(current_user)):
             'note': 'ALS、FM 和双塔神经网络已接入离线训练；启用模型后可在线推荐，其余深度架构尚未实现。'}
 
 @app.get('/api/recommendations')
-def recommendations(user: dict = Depends(current_user), user_id: Optional[str] = Query(None, pattern=r'^[a-zA-Z0-9_-]{1,64}$'), algorithm: str = 'hybrid', limit: int = Query(12, ge=1, le=24)):
+def recommendations(user: dict = Depends(current_user),
+                    user_id: Optional[str] = Query(None, pattern=r'^[a-zA-Z0-9_-]{1,64}$'),
+                    algorithm: str = 'hybrid',
+                    limit: int = Query(12, ge=1, le=24)):
+    # 推荐入口：读取最近分析样本和完整观看历史，再按算法类型分派。
+    # 传统算法现场评分；ALS/FM/双塔只加载启用模型。分数为相对排序值，不是点击率。
     if user_id is not None:
         require_identity(user, user_id)
     user_id = user_id or user['id']
@@ -220,6 +230,8 @@ def recommendations(user: dict = Depends(current_user), user_id: Optional[str] =
 
 @app.post('/api/events', status_code=202)
 def event(payload: Event, user: dict = Depends(current_user)):
+    # 先提交业务状态与 Outbox，再返回 202；此时 Kafka/Flink 可能尚未处理。
+    # 客户端失败重试必须复用 event_id，避免将同一行为重复计入特征。
     if payload.user_id is not None:
         require_identity(user, payload.user_id)
     data = {**payload.model_dump(exclude={'user_id'}), 'user_id': user['id'], 'timestamp': time.time()}
@@ -239,6 +251,8 @@ def event(payload: Event, user: dict = Depends(current_user)):
 
 @app.get('/api/metrics')
 def metrics(user: dict = Depends(current_user)):
+    # 控制台统计基于最近 20000 条事件样本，不代表全站累计指标。
+    # 时间轴按当前时间划分为 12 个五分钟桶，链路状态由独立探测器返回。
     try:
         events = database().events()
     except Exception as exc:

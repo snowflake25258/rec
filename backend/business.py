@@ -11,6 +11,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from backend.catalog import catalog
 from backend.store import Config
 from backend.recommendation_policy import WATCH_ACTIONS
+from backend.schema_comments import apply_comments
 
 metadata = MetaData()
 users = Table('users', metadata,
@@ -48,11 +49,15 @@ for table in metadata.tables.values():
     table.dialect_options['mysql']['collate'] = 'utf8mb4_bin'
     table.dialect_options['mysql']['engine'] = 'InnoDB'
 
+apply_comments(metadata)
+
 class EventConflict(ValueError):
     pass
 
 class BusinessStore:
     def __init__(self, config: Config) -> None:
+        # 业务存储统一使用 MySQL；pool_pre_ping 检测陈旧连接，连接池由本对象持有。
+        # create_all 仅创建缺失表，已有表注释由初始化命令显式同步。
         self.config = config
         if not config.mysql_password:
             raise ValueError('MYSQL_PASSWORD is required for MySQL business storage')
@@ -66,6 +71,8 @@ class BusinessStore:
             self.seed()
 
     def upsert(self, db: Connection, table: Table, values: dict[str, Any], changes: dict[str, Any] | None = None) -> None:
+        # 使用 MySQL 主键或唯一键冲突更新；未传 changes 时执行无实质变化的更新。
+        # 种子目录由此只补缺失项，普通重启不覆盖用户编辑。
         stmt = mysql_insert(table).values(**values)
         db.execute(stmt.on_duplicate_key_update(**(changes or {next(iter(values)): table.c[next(iter(values))]})))
 
@@ -101,6 +108,8 @@ class BusinessStore:
 
 
     def catalog(self) -> list[dict[str, Any]]:
+        # 仅返回已发布视频；真实有效点赞与演示初始点赞相加用于展示。
+        # 先按视频聚合点赞，再关联作者，避免多条互动导致视频行重复。
         counts = select(interactions.c.item_id, func.count().label('likes_count')).where(
             interactions.c.kind == 'like', interactions.c.active.is_(True)).group_by(interactions.c.item_id).subquery()
         stmt = select(videos, users.c.name.label('author'), users.c.avatar,
@@ -120,6 +129,8 @@ class BusinessStore:
 
     def watched_ids(self, user: str) -> set[str]:
         # Read committed business events immediately, without waiting for Kafka/Flink.
+        # Outbox 在业务提交时立即可读，用于弥补异步流处理的延迟。
+        # 仅 view/complete 构成已看，不把点赞、收藏或跳过单独当作观看。
         item = outbox.c.payload['item_id'].as_string()
         with self.engine.connect() as db:
             return set(db.execute(select(item).where(
@@ -127,6 +138,9 @@ class BusinessStore:
                 outbox.c.payload['action'].as_string().in_(WATCH_ACTIONS)).distinct()).scalars())
 
     def record(self, event: dict[str, Any]) -> bool:
+        # 同一事务更新互动状态并持久化事件；用户行锁串行化该用户的并发写入。
+        # 同 event_id 同载荷视为重试，不同载荷抛出冲突。
+        # 重复设置已存在的点赞/关注状态仍记录幂等事件，但标为无需投递，避免重复加权。
         """Business mutation + durable outbox in one transaction. Returns whether new."""
         with self.engine.begin() as db:
             # Serialize each user's writes, including first interactions and outbox retries.

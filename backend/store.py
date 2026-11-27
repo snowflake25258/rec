@@ -34,6 +34,8 @@ class Config:
 
 class Store:
     def __init__(self,config: Config,engine: Engine | None = None) -> None:
+        # 按模式选择演示表或 stream_* 实时表，避免直接计算与 Flink 覆盖同一份聚合。
+        # 传入 engine 时复用业务连接池，close 不负责释放它。
         if config.mode not in ('demo','production'):
             raise ValueError('REC_MODE must be demo or production')
         self.config=config
@@ -65,6 +67,8 @@ class Store:
                             action=rng.choice(['view','like','complete','favorite']),timestamp=now-65000+i*90))
 
     def _append_sql(self,db: Connection,event: dict[str,Any]) -> None:
+        # 演示链路在同一事务先按 event_id 去重，再写明细并原子累加偏好。
+        # 生产模式不走此方法，聚合交给 Flink。
         if db.execute(select(events.c.event_id).where(events.c.event_id==event['event_id'])).first():
             return
         weight=WEIGHTS.get(event['action'],0.)
@@ -76,6 +80,8 @@ class Store:
         db.execute(mysql_insert(features).values(**values).on_duplicate_key_update(**changes))
 
     def events(self) -> list[dict[str,Any]]:
+        # 按时间倒序选最近 20000 条，再反转为时间正序供序列算法使用。
+        # 该限制适用于分析样本；已看排除另行查询完整历史。
         events=self.event_table
         with self.engine.connect() as db:
             rows=db.execute(select(events).order_by(events.c.ts_ms.desc(),events.c.event_id.desc()).limit(20000)).mappings().all()
@@ -89,6 +95,8 @@ class Store:
                 table.c.user_id==user,table.c.action.in_(WATCH_ACTIONS)).distinct()).scalars())
 
     def append(self,event: dict[str,Any]) -> None:
+        # demo 直接落 MySQL；production 使用 Kafka 生产者按用户编号分区。
+        # acks=all 并等待 send 结果，投递失败由外层 Outbox 保留并重试。
         if self.config.mode=='demo':
             with self.engine.begin() as db:
                 self._append_sql(db,event)
@@ -103,6 +111,7 @@ class Store:
             self.producer.send(self.config.kafka_topic,key=event['user_id'].encode(),value=wire).get(timeout=10)
 
     def features(self) -> list[dict[str,Any]]:
+        # 读取最近更新的用户视频聚合值；为累计偏好，不按请求再次累加事件。
         features=self.feature_table
         with self.engine.connect() as db:
             return [dict(r) for r in db.execute(select(features.c.user_id,features.c.item_id,features.c.preference)

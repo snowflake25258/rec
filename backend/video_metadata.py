@@ -6,6 +6,8 @@ from typing import BinaryIO, Iterator
 
 
 def boxes(stream: BinaryIO,start: int,end: int) -> Iterator[tuple[bytes,int,int]]:
+    # MP4 使用大端 box 结构：普通头 8 字节，size=1 为 64 位扩展长度。
+    # size=0 表示延伸到父容器末尾，越界或短于头部的长度立即拒绝。
     position=start
     while position+8<=end:
         stream.seek(position)
@@ -20,6 +22,8 @@ def boxes(stream: BinaryIO,start: int,end: int) -> Iterator[tuple[bytes,int,int]
 
 
 def video_metadata(path: Path) -> dict[str,float | int]:
+    # 在 moov/mvhd 中读取时间尺度和时长，兼容版本 0/1 的 32/64 位字段。
+    # trak/tkhd 最后 8 字节为 16.16 定点宽高；音频轨宽高为零，不参与尺寸选择。
     duration=0.;width=height=0
     with path.open('rb') as stream:
         for kind,start,end in boxes(stream,0,path.stat().st_size):

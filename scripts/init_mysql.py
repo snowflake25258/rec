@@ -14,6 +14,8 @@ def main() -> None:
     from backend.business import BusinessStore
     from backend.auth import AuthService
     from backend.analytics_schema import metadata as analytics_metadata
+    from backend.business import metadata as business_metadata
+    from backend.schema_comments import sync_mysql_comments
     config=Config()
     if not re.fullmatch(r'[A-Za-z0-9_]{1,64}',config.mysql_database):
         raise ValueError('MYSQL_DATABASE must contain only letters, digits and underscores')
@@ -35,6 +37,9 @@ def main() -> None:
                     if column['name'] in names and isinstance(column['type'],FLOAT):
                         nullability='NULL' if column['nullable'] else 'NOT NULL'
                         connection.execute(text(f"ALTER TABLE `{table}` MODIFY `{column['name']}` DOUBLE {nullability}"))
+        # create_all 只负责缺失表；已有表的中文注释需要显式 ALTER 才会生效。
+        changed = sync_mysql_comments(business.engine, (business_metadata, analytics_metadata))
+        print(f'MySQL Chinese comments synchronized: tables={changed}')
         analytics=Store(config,business.engine)
         try:
             print(f'MySQL schema ready: {config.mysql_database}; videos={len(business.catalog())}; events={len(analytics.events())}')

@@ -8,6 +8,7 @@ from backend.training.registry import Registry
 router = APIRouter(prefix='/api/models',tags=['models'])
 
 class TrainingRequest(BaseModel):
+    # 限制模型类别、向量维度、轮数和随机种子，防止无边界的同步资源消耗。
     algorithm: Literal['als','fm','two_tower']
     factors: int = Field(default=12,ge=4,le=32)
     epochs: int = Field(default=20,ge=1,le=50)
@@ -21,6 +22,8 @@ def versions(request: Request):
 
 @router.post('/train',status_code=202)
 def train(payload: TrainingRequest,request: Request):
+    # 提交快照训练任务并返回 202，计算由单线程管理器异步完成。
+    # 样本不足返回 422，已有训练任务运行返回 409。
     registry: Registry = request.app.state.registry
     try:
         events = request.app.state.analytics.events()
@@ -43,6 +46,7 @@ def version_details(version: str,request: Request):
 
 @router.post('/{version}/activate')
 def activate(version: str,request: Request):
+    # 启用前校验模型状态、路径和内容摘要；异常制品不能进入在线推荐。
     try:
         return request.app.state.registry.activate(version)
     except LookupError as exc:

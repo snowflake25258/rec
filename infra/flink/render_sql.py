@@ -6,9 +6,12 @@ import argparse
 import os
 
 STATEMENT_SET_MARKER = 'EXECUTE STATEMENT SET'
+# 语句必须出现在行首：SQL 注释里也会出现同样的文字，按行锚定才不会把恢复语句插进注释。
+STATEMENT_SET_LINE = '\nEXECUTE STATEMENT SET'
 
 
 def escape_literal(value: str) -> str:
+    # 模板值已经位于 SQL 单引号内，这里只转义单引号，不能用于 SQL 标识符。
     """Escape a value that is already wrapped in single quotes by the template."""
     return value.replace("'", "''")
 
@@ -20,6 +23,8 @@ def mysql_jdbc_url(host: str, port: str, database: str) -> str:
 
 def render(template: str, values: Mapping[str, str],
            restore_paths: Sequence[str] = ()) -> str:
+    # 三条 INSERT 保持在同一个 Statement Set 中，形成一个作业及一份恢复状态。
+    # 只允许一个恢复路径，恢复 SET 必须出现在 Statement Set 之前。
     """Substitute ${NAME} placeholders and optionally prepend restore statements.
 
     The three INSERTs run inside one EXECUTE STATEMENT SET job, matching the
@@ -35,10 +40,10 @@ def render(template: str, values: Mapping[str, str],
         return template
     if len(paths) != 1:
         raise ValueError(f'restore requires one savepoint path, got {len(paths)}')
-    if STATEMENT_SET_MARKER not in template:
+    if STATEMENT_SET_LINE not in template:
         raise ValueError(f'pipeline is missing {STATEMENT_SET_MARKER}')
     restore = f"SET 'execution.savepoint.path' = '{escape_literal(paths[0])}';\n"
-    return template.replace(STATEMENT_SET_MARKER, restore + STATEMENT_SET_MARKER, 1)
+    return template.replace(STATEMENT_SET_LINE, '\n' + restore + STATEMENT_SET_MARKER, 1)
 
 
 def template_values(environ: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -56,6 +61,8 @@ def template_values(environ: Mapping[str, str] | None = None) -> dict[str, str]:
 
 
 def main() -> None:
+    # 渲染文件可能包含 MySQL 密码，输出后将权限限制为仅属主可读写。
+    # 渲染内容不应写入版本库或直接输出到日志。
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('template', type=Path)
     parser.add_argument('output', type=Path)

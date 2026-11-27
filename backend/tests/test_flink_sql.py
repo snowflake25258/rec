@@ -20,7 +20,8 @@ def test_render_replaces_placeholders_and_escapes_password() -> None:
     sql = render(TEMPLATE.read_text(encoding='utf-8'), values())
     assert '${' not in sql
     assert "pa''ss" in sql
-    assert sql.count('EXECUTE STATEMENT SET') == 1
+    # 注释里也会出现同样的字样，这里只统计行首的真实语句
+    assert sql.count('\nEXECUTE STATEMENT SET') == 1
     assert sql.count('INSERT INTO ') == 3
 
 
@@ -28,7 +29,7 @@ def test_restore_is_a_single_statement_before_the_statement_set() -> None:
     sql = render(TEMPLATE.read_text(encoding='utf-8'), values(), ['file:/savepoints/job1'])
     marker = "SET 'execution.savepoint.path' = 'file:/savepoints/job1';"
     assert marker in sql
-    assert sql.index(marker) < sql.index('EXECUTE STATEMENT SET')
+    assert sql.index(marker) < sql.index('\nEXECUTE STATEMENT SET')
 
 
 def test_restore_rejects_multiple_paths() -> None:

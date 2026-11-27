@@ -12,6 +12,7 @@ _lock=Lock()
 
 
 def kafka_status(config: Config) -> dict[str,Any]:
+    # 通过管理客户端实际检查指定 Topic 及其分区，不以环境变量存在代表可用。
     from kafka import KafkaAdminClient
     client=None
     try:
@@ -28,6 +29,8 @@ def kafka_status(config: Config) -> dict[str,Any]:
 
 
 def flink_status(config: Config) -> dict[str,Any]:
+    # 必须同时满足指定作业 RUNNING 且最近一分钟内完成 checkpoint 才视为健康。
+    # 这里只探测指定作业，不会因集群中其他作业正常而误报。
     if not config.flink_job_id:
         return {'name':'Flink SQL + Python UDF','status':'unconfigured'}
     try:
@@ -51,6 +54,8 @@ def flink_status(config: Config) -> dict[str,Any]:
 
 
 def pipeline_status(config: Config) -> list[dict[str,Any]]:
+    # 生产模式并行读取 Kafka 与 Flink 状态，缓存五秒减少控制台轮询负担。
+    # demo 明确返回未连接状态，不伪装成已经执行流计算。
     if config.mode!='production':
         return [{'name':'Kafka','status':'not_connected'},{'name':'Flink SQL + Python UDF','status':'not_connected'}]
     key=(config.kafka,config.kafka_topic,config.flink_rest_url,config.flink_job_id)

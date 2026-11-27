@@ -14,6 +14,7 @@ def media_root() -> Path:
 
 
 def load_manifest(root: Path) -> dict:
+    # 加载版本化下载清单；清单不存在时允许远程地址回退，格式异常时明确报错。
     path=root/'manifest.json'
     if not path.exists():return {'version':1,'videos':{}}
     data=json.loads(path.read_text(encoding='utf-8'))
@@ -23,6 +24,8 @@ def load_manifest(root: Path) -> dict:
 
 
 def local_sources(urls: list[str]) -> list[str]:
+    # 仅当清单文件名符合 SHA-256 命名且本地文件存在时改用媒体接口。
+    # 避免将任意路径拼接到本地视频根目录之外。
     root=media_root()
     manifest=load_manifest(root)
     result=[]

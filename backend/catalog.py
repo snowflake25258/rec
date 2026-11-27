@@ -19,6 +19,8 @@ TOPICS=[
 
 
 def catalog() -> list[dict[str,Any]]:
+    # 校验 24 个素材来源各自独立，优先使用本地下载文件与实际时长。
+    # 类别、创作者和基础热度仅用于演示，不代表真实平台统计。
     if len(SOURCES)!=24 or len(set(CLIPS))!=24:
         raise ValueError('Each demo video must have a distinct source')
     clips=local_sources(CLIPS)

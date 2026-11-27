@@ -132,10 +132,11 @@ docker compose exec -T jobmanager curl -fsS --max-time 5 http://localhost:8081/o
 
 注册尚未完成时，稍后重复检查；不要只凭容器显示 Running 就提交作业。若已有推荐作业占用 slot，先按下一节检查，避免重复提交。
 
-## 8. 启动应用
+## 8. 启动应用（前后端服务）
 
 ```bash
 docker compose up -d --no-deps --build app
+docker compose down app
 docker compose logs --tail 80 app
 ```
 
@@ -190,7 +191,6 @@ select * from kafka_events;
 先检查是否已有同名作业：
 
 ```bash
-
 docker compose exec -T jobmanager curl -fsS --max-time 5 http://localhost:8081/jobs/overview
 ```
 
@@ -199,6 +199,7 @@ docker compose exec -T jobmanager curl -fsS --max-time 5 http://localhost:8081/j
 首次启动、没有该作业时执行：
 
 ```bash
+# 提交任务
 docker compose up -d --no-deps --build flink-submit
 docker compose logs -f flink-submit
 ```

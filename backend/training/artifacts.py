@@ -16,6 +16,8 @@ def checksum(path: Path) -> str:
 
 
 def save(root: Path, version: str, model: Model, data: Dataset, config: dict[str,Any]) -> tuple[Path,str]:
+    # 模型参数、编号映射、训练矩阵与验证快照一起压缩保存。
+    # 先写同目录临时文件，再原子替换目标文件，避免读取到半个模型。
     root.mkdir(parents=True,exist_ok=True)
     destination = root/f'{version}.npz'
     temporary = root/f'.{uuid4().hex}.npz'
@@ -32,6 +34,8 @@ def save(root: Path, version: str, model: Model, data: Dataset, config: dict[str
 
 
 def load(path: Path, expected_hash: str) -> Model:
+    # 先检查文件大小和 SHA-256，再以 allow_pickle=False 读取数组。
+    # 验证格式版本、参数有限性与输出维度，不直接信任磁盘内容。
     if not path.is_file() or path.stat().st_size > 64*1024*1024:
         raise ValueError('模型文件不存在或超过大小限制')
     if checksum(path) != expected_hash:

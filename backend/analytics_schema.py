@@ -1,6 +1,7 @@
 """MySQL tables used by Flink JDBC sinks and online feature reads."""
 from sqlalchemy import MetaData, Table, Column, String, BigInteger, Double, DateTime, Index
 from sqlalchemy.dialects.mysql import DATETIME
+from backend.schema_comments import apply_comments
 
 metadata = MetaData()
 events = Table('events', metadata,
@@ -28,3 +29,6 @@ stream_hotness = hotness.to_metadata(metadata, name='stream_item_hotness')
 for table in (stream_events,stream_features,stream_hotness):
     for index in table.indexes:
         index.name='ix_stream_'+index.name.removeprefix('ix_')
+
+# 克隆完成后重新赋予语义，区分演示表与 Flink 生产输出表的表级注释。
+apply_comments(metadata)

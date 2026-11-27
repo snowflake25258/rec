@@ -13,6 +13,7 @@ class Model:
     params: dict[str, np.ndarray]
 
     def scores(self, user: str) -> np.ndarray | None:
+        # 一次计算已知用户对模型目录的全部视频分数；未知用户返回 None 交由热门回退。
         if user not in self.users:
             return None
         u = self.users.index(user)
@@ -23,6 +24,8 @@ class Model:
 
 def forward(algorithm: str, p: dict[str,np.ndarray], u: np.ndarray, j: np.ndarray,
             cats: np.ndarray, nusers: int, nitems: int) -> tuple[np.ndarray, dict[str,np.ndarray]]:
+    # ALS 计算因子点积；FM 用平方和技巧计算二阶交叉；
+    # 双塔分别变换用户和视频向量，再按维度缩放点积。返回中间量供反向传播复用。
     if algorithm == 'als':
         return (p['user'][u]*p['item'][j]).sum(axis=1), {}
     if algorithm == 'fm':
@@ -41,6 +44,8 @@ def forward(algorithm: str, p: dict[str,np.ndarray], u: np.ndarray, j: np.ndarra
 
 def gradient(algorithm: str, p: dict[str,np.ndarray], u: np.ndarray, j: np.ndarray, y: np.ndarray,
              cats: np.ndarray, nusers: int, nitems: int) -> tuple[float, dict[str,np.ndarray]]:
+    # FM 与双塔使用数值稳定的二元交叉熵；np.add.at 累加重复特征索引的梯度。
+    # ALS 不走此梯度入口，而采用闭式交替求解。
     logits, c = forward(algorithm,p,u,j,cats,nusers,nitems)
     loss = float(np.mean(np.logaddexp(0.,logits)-y*logits))
     g = (1/(1+np.exp(-np.clip(logits,-40,40)))-y)/len(y)
@@ -64,6 +69,8 @@ def gradient(algorithm: str, p: dict[str,np.ndarray], u: np.ndarray, j: np.ndarr
 
 
 def fit(data: Dataset, algorithm: str, factors: int = 12, epochs: int = 20, seed: int = 42) -> tuple[Model,list[float]]:
+    # 固定随机种子保证同输入可复现。ALS 交替解用户与视频因子线性系统；
+    # FM/双塔按 64 条小批次执行 SGD。训练结束拒绝非有限参数或损失。
     rng = np.random.default_rng(seed)
     nu, ni = data.matrix.shape
     losses: list[float] = []

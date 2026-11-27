@@ -97,6 +97,16 @@ Flink JDBC SQL sink 采用至少一次投递和主键 upsert，不是跨表原�
 
 ## MySQL 数据表
 
+14 张表及 77 个字段均带中文 `COMMENT`，说明见 [MySQL 中文数据字典](docs/mysql-data-dictionary.md)。新建表与 `infra/mysql/schema.sql` 使用同一份元数据定义；执行 `scripts.init_mysql` 时也会为已有表补齐注释。
+
+只更新已有业务库注释、不初始化种子数据时执行：
+
+```bash
+.venv/bin/python -m scripts.comment_mysql
+```
+
+注释同步保留服务器返回的字段类型、默认值、可空性等实际定义，不删除业务行、不创建测试库；相同注释不重复执行 DDL。MySQL `ALTER TABLE` 会隐式提交并可能获取元数据锁，建议在低流量时执行。中文注释统一维护在 `backend/schema_comments.py`。
+
 | 表 | 职责 |
 | --- | --- |
 | users | 用户与创作者资料 |

@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 class Registry:
     def __init__(self,business: BusinessStore,root: str) -> None:
+        # 当前管理器限定单进程单任务；重启后未完成任务标记失败，不伪装成可恢复。
+        # 模型版本元数据在 MySQL，参数文件在持久化模型目录。
         self.business = business
         self.root = Path(root).resolve()
         # This development trainer is single-process; interrupted jobs are not resumable.
@@ -56,6 +58,7 @@ class Registry:
 
     def submit(self,items: list[dict[str,Any]],events: list[dict[str,Any]],algorithm: str,
                factors: int,epochs: int,seed: int) -> str:
+        # 验证并冻结数据快照后才预占训练槽位。锁与单线程执行器防止本进程并发训练。
         if algorithm not in {a[0] for a in TRAINABLE}:
             raise ValueError('未知训练算法')
         # Validate and freeze the sample before reserving a job.
@@ -77,6 +80,8 @@ class Registry:
             db.execute(model_versions.update().where(model_versions.c.id==version).values(metrics=metrics,**fields))
 
     def _train(self,version: str,algorithm: str,data,config: dict[str,Any]) -> None:
+        # 后台训练、时间切分评估并计算热门基线，最后保存制品及校验和。
+        # 训练异常写入 failed 状态，避免任务永久停留在 running。
         started = time.time()
         try:
             self.update(version,{'status':'running','config':config,'started_at':started})
@@ -109,6 +114,8 @@ class Registry:
         return model
 
     def activate(self,version: str) -> dict[str,Any]:
+        # 持锁校验制品，并在同一数据库事务内停用该算法旧版本、启用新版本。
+        # 提交后缓存已校验模型，随后推理可复用不可变权重。
         with self.lock:
             with self.business.engine.begin() as db:
                 row = db.execute(select(model_versions).where(model_versions.c.id==version)).mappings().first()
@@ -138,6 +145,8 @@ class Registry:
 
     def recommendations(self,algorithm: str,user: str,items: list[dict[str,Any]],events: list[dict[str,Any]],
                         limit: int,features=None,excluded: set[str] | None = None) -> dict[str,Any]:
+        # 只使用已启用版本；缓存最多保留八个版本，首次载入检查摘要。
+        # 未知用户热门回退，新视频热门补齐；两种路径都必须复用已看排除集合。
         row = self.active(algorithm)
         if row is None:
             raise LookupError('该算法尚未启用模型，请先在推荐控制台训练并启用版本')

@@ -35,3 +35,24 @@ def test_production_features_are_used():
 def test_unknown_algorithm():
     with pytest.raises(ValueError):
         recommend(catalog(), [], 'u001', 'fake')
+
+
+def test_popular_does_not_compute_collaborative_similarity(monkeypatch):
+    import numpy as np
+
+    def unexpected_norm(*args, **kwargs):
+        raise AssertionError('热门推荐不应计算协同过滤相似度')
+
+    monkeypatch.setattr(np.linalg, 'norm', unexpected_norm)
+    assert len(recommend(catalog(), [], 'new', 'popular', 3)) == 3
+
+
+def test_mmr_penalizes_repeated_categories():
+    import numpy as np
+    from backend.algorithms import rerank_mmr
+
+    scores = np.array([1., .9, .8])
+    features = np.array([[1., 0.], [1., 0.], [0., 1.]])
+    candidates = [0, 1, 2]
+    assert rerank_mmr(scores, features, candidates, 3) == [0, 2, 1]
+    assert candidates == [0, 1, 2]

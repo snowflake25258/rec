@@ -20,6 +20,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import IntegrityError
 
 from backend.business import metadata, users
+from backend.schema_comments import apply_comments
 
 PASSWORD_ALGORITHM = 'pbkdf2_sha256'
 PASSWORD_ITERATIONS = 600_000
@@ -50,6 +51,8 @@ for table in (accounts, auth_sessions):
     table.dialect_options['mysql']['collate'] = 'utf8mb4_bin'
     table.dialect_options['mysql']['engine'] = 'InnoDB'
 
+apply_comments(metadata)
+
 
 class AuthError(Exception):
     """Base class for expected account errors."""
@@ -68,6 +71,8 @@ def normalize_username(username: str) -> str:
 
 
 def hash_password(password: str, *, iterations: int = PASSWORD_ITERATIONS) -> str:
+    # 每个密码生成独立随机盐，执行 PBKDF2-HMAC-SHA256。
+    # 返回自描述格式，含算法和迭代次数，数据库不保存明文密码。
     salt = secrets.token_bytes(PASSWORD_SALT_BYTES)
     digest = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, iterations,
                                  dklen=PASSWORD_KEY_BYTES)
@@ -77,6 +82,8 @@ def hash_password(password: str, *, iterations: int = PASSWORD_ITERATIONS) -> st
 
 
 def verify_password(password: str, encoded: str) -> bool:
+    # 解析摘要并限制迭代次数，避免畸形存量值触发过量计算。
+    # 使用常量时间 compare_digest 比较派生密钥。
     try:
         algorithm, iterations, salt, expected = encoded.split('$')
         if algorithm != PASSWORD_ALGORITHM:
@@ -120,6 +127,8 @@ class AuthService:
         return dict(id=row['id'], username=row['username'], name=row['name'], avatar=row['avatar'])
 
     def _issue(self, db, user_id: str, user_agent: str, now: float) -> tuple[str, float]:
+        # 生成高熵不透明令牌，只将 SHA-256 摘要落库。
+        # 签发新令牌时清理过期会话，原始令牌只通过当前响应交给客户端。
         token = secrets.token_urlsafe(32)
         expires_at = now + self.token_ttl
         db.execute(delete(auth_sessions).where(auth_sessions.c.expires_at <= now))
@@ -131,6 +140,8 @@ class AuthService:
 
     def register(self, username: str, password: str, name: str = '',
                  user_agent: str = '') -> dict[str, Any]:
+        # 用户资料、账号凭据和登录会话在一个事务内创建。
+        # 唯一用户名索引兜底处理并发注册冲突。
         username = normalize_username(username)
         display_name = (name or '').strip() or username
         now = time.time()
@@ -154,6 +165,8 @@ class AuthService:
                 'user': dict(id=user_id, username=username, name=display_name, avatar='Y')}
 
     def login(self, username: str, password: str, user_agent: str = '') -> dict[str, Any]:
+        # 先校验密码再签发新会话；未知账号也计算虚拟密码摘要。
+        # 对外统一错误信息，避免直接暴露用户名是否存在。
         username = normalize_username(username)
         with self.engine.connect() as db:
             row = db.execute(select(users.c.id, users.c.name, users.c.avatar,
@@ -175,6 +188,8 @@ class AuthService:
                              avatar=row['avatar'])}
 
     def authenticate(self, token: str) -> dict[str, Any] | None:
+        # 以摘要查询令牌，过期会话立即删除。
+        # 最近使用时间最多每五分钟更新一次，降低每次请求写库的成本。
         if not token or len(token) > 256:
             return None
         digest = _token_digest(token)
